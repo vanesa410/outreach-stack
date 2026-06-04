@@ -1,0 +1,31 @@
+# ── Secrets / env ────────────────────────────────────────────────────────────
+.env
+**/.env
+deploy/.env
+
+# ── Personal project memory (Claude) ─────────────────────────────────────────
+.claude/
+
+# ── Proprietary / personal data (each user brings their own contacts) ────────
+*.xlsx
+~$*.xlsx
+*.png
+
+# ── Runtime / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+deploy/caddy-data/
+deploy/caddy-config/
+
+# ── Old / one-off dev artifacts (not part of the shared structure) ───────────
+finance_n8n_workflow.json
+finance_n8n_workflow.json.bak
+Automation_Twenty+gmail.json
+create_note_node.json
+filter_replies_node.json
+patch_stages.py
+patch_approval.py
+patch_deal.py
+patch_improvements.py
+build_influencers_xlsx.py
+heatmap_followers.py
+update_and_filter_small.py

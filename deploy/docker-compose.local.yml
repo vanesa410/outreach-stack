@@ -1,0 +1,38 @@
+# Local testing override — run WITHOUT DNS or HTTPS on your own machine.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+#
+# Differences from production:
+#   - Publishes Twenty (:3100) and n8n (:5678) directly to localhost.
+#     (3100, not 3000, to avoid clashing with another local project on :3000.)
+#   - Forces plain-HTTP localhost URLs (overrides the https values in .env).
+#   - Skips Caddy entirely (parked behind a profile that isn't enabled here).
+#
+# Open:  http://localhost:3100  (Twenty)   http://localhost:5678  (n8n)
+
+services:
+  twenty-server:
+    # host_port:container_port — only the host side (left) changed.
+    ports:
+      - "3100:3000"
+    environment:
+      SERVER_URL: http://localhost:3100
+
+  twenty-worker:
+    environment:
+      SERVER_URL: http://localhost:3100
+
+  n8n:
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_PROTOCOL: http
+      N8N_HOST: localhost
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_EDITOR_BASE_URL: http://localhost:5678/
+      N8N_SECURE_COOKIE: "false"
+
+  # Park Caddy behind an inactive profile so it does NOT start locally.
+  # (No --profile flag is passed, so this service is skipped.)
+  caddy:
+    profiles: ["proxy"]

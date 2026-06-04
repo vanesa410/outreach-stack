@@ -1,0 +1,19 @@
+# Caddy auto-provisions and renews Let's Encrypt TLS certs for each domain.
+# Replace the two domains below with your real DNS names, then make sure both
+# A-records point at this server's public IP before starting the stack.
+
+crm.example.com {
+	reverse_proxy twenty-server:3000
+}
+
+n8n.example.com {
+	reverse_proxy n8n:5678
+}
+
+# ── Local / no-domain testing ────────────────────────────────────────────────
+# If you just want to try it on a machine without DNS, comment out the two
+# blocks above and uncomment these. Caddy serves self-signed certs on :443.
+#
+# https://localhost:8443 {
+# 	reverse_proxy twenty-server:3000
+# }

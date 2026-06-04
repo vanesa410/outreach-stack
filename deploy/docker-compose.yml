@@ -1,0 +1,178 @@
+name: finance-stack
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Twenty CRM + n8n on one host, one compose file.
+# - One shared Postgres 16 instance with two databases: "default" (Twenty) + "n8n"
+# - One shared Redis (Twenty requires it; n8n uses it only if queue mode enabled)
+# - Caddy reverse proxy terminates HTTPS for both apps
+# Internal traffic (n8n -> Twenty) stays on the docker network, never public.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── Twenty CRM backend ─────────────────────────────────────────────────────
+  twenty-server:
+    image: twentycrm/twenty:${TWENTY_TAG:-latest}
+    volumes:
+      - twenty-local-data:/app/packages/twenty-server/.local-storage
+    environment:
+      NODE_PORT: 3000
+      PG_DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD}@db:5432/default
+      SERVER_URL: ${TWENTY_SERVER_URL}
+      REDIS_URL: redis://redis:6379
+      STORAGE_TYPE: local
+      ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY}
+      APP_SECRET: ${TWENTY_APP_SECRET}
+      # ── Google email (Gmail) sync — fills the contact's Emails timeline ──
+      AUTH_GOOGLE_ENABLED: ${AUTH_GOOGLE_ENABLED:-false}
+      MESSAGING_PROVIDER_GMAIL_ENABLED: ${MESSAGING_PROVIDER_GMAIL_ENABLED:-false}
+      CALENDAR_PROVIDER_GOOGLE_ENABLED: ${CALENDAR_PROVIDER_GOOGLE_ENABLED:-false}
+      AUTH_GOOGLE_CLIENT_ID: ${TWENTY_GOOGLE_CLIENT_ID:-}
+      AUTH_GOOGLE_CLIENT_SECRET: ${TWENTY_GOOGLE_CLIENT_SECRET:-}
+      AUTH_GOOGLE_CALLBACK_URL: ${TWENTY_GOOGLE_CALLBACK_URL:-}
+      AUTH_GOOGLE_APIS_CALLBACK_URL: ${TWENTY_GOOGLE_APIS_CALLBACK_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail http://localhost:3000/healthz
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: always
+
+  # ── Twenty CRM background worker (emails, cron, async jobs) ─────────────────
+  twenty-worker:
+    image: twentycrm/twenty:${TWENTY_TAG:-latest}
+    volumes:
+      - twenty-local-data:/app/packages/twenty-server/.local-storage
+    command: ["yarn", "worker:prod"]
+    environment:
+      PG_DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD}@db:5432/default
+      SERVER_URL: ${TWENTY_SERVER_URL}
+      REDIS_URL: redis://redis:6379
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+      STORAGE_TYPE: local
+      ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY}
+      APP_SECRET: ${TWENTY_APP_SECRET}
+      # ── Google email (Gmail) sync — worker runs the import jobs ──
+      AUTH_GOOGLE_ENABLED: ${AUTH_GOOGLE_ENABLED:-false}
+      MESSAGING_PROVIDER_GMAIL_ENABLED: ${MESSAGING_PROVIDER_GMAIL_ENABLED:-false}
+      CALENDAR_PROVIDER_GOOGLE_ENABLED: ${CALENDAR_PROVIDER_GOOGLE_ENABLED:-false}
+      AUTH_GOOGLE_CLIENT_ID: ${TWENTY_GOOGLE_CLIENT_ID:-}
+      AUTH_GOOGLE_CLIENT_SECRET: ${TWENTY_GOOGLE_CLIENT_SECRET:-}
+      AUTH_GOOGLE_CALLBACK_URL: ${TWENTY_GOOGLE_CALLBACK_URL:-}
+      AUTH_GOOGLE_APIS_CALLBACK_URL: ${TWENTY_GOOGLE_APIS_CALLBACK_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      twenty-server:
+        condition: service_healthy
+    restart: always
+
+  # ── n8n workflow automation ────────────────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:${N8N_TAG:-latest}
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: db
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${PG_USER:-postgres}
+      DB_POSTGRESDB_PASSWORD: ${PG_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PROTOCOL: https
+      N8N_PORT: 5678
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      N8N_EDITOR_BASE_URL: ${N8N_WEBHOOK_URL}
+      GENERIC_TIMEZONE: ${TZ:-Europe/Prague}
+      N8N_RUNNERS_ENABLED: "true"
+      # Raise Node's HTTP header limit (default 16KB) so large browser cookies
+      # — e.g. from other apps sharing the localhost domain — don't trigger
+      # HTTP 431 during OAuth flows.
+      NODE_OPTIONS: "--max-http-header-size=65536"
+      # Twenty is reachable internally at this URL (no public hop):
+      TWENTY_BASE_URL: http://twenty-server:3000
+    volumes:
+      - n8n-data:/home/node/.n8n
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: always
+
+  # ── Stalwart mail server (self-hosted SMTP/IMAP for n8n) ────────────────────
+  # n8n reaches it internally at stalwart:587 (SMTP submission) and stalwart:143 (IMAP).
+  # Admin UI on :8080. Mail ports published for production external delivery
+  # (needs a real domain + MX/SPF/DKIM/DMARC/PTR — see README).
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+    environment:
+      # Fixed fallback/recovery admin so you can log into the web UI immediately.
+      STALWART_RECOVERY_ADMIN: "admin:${STALWART_ADMIN_PASSWORD}"
+    volumes:
+      - stalwart-data:/var/lib/stalwart
+    ports:
+      - "8080:8080"   # web admin  → http://localhost:8080
+      - "25:25"       # SMTP (inbound, prod)
+      - "587:587"     # SMTP submission
+      - "465:465"     # SMTPS
+      - "143:143"     # IMAP
+      - "993:993"     # IMAPS
+    restart: always
+
+  # ── Shared Postgres (Twenty's "default" DB + n8n's "n8n" DB) ────────────────
+  db:
+    image: postgres:16
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d:ro
+    environment:
+      POSTGRES_DB: default
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    healthcheck:
+      test: pg_isready -U ${PG_USER:-postgres} -h localhost -d postgres
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  # ── Shared Redis ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7
+    command: ["--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  # ── Caddy reverse proxy (automatic HTTPS via Let's Encrypt) ─────────────────
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - twenty-server
+      - n8n
+    restart: always
+
+volumes:
+  db-data:
+  twenty-local-data:
+  n8n-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
+  stalwart-data:

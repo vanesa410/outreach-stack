@@ -1,0 +1,1784 @@
+{
+  "name": "All in one (Twenty)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## ⚙️ TWENTY SETUP — do this first\n\n### 1. Custom fields on the **Person** object\nSettings → Data model → People → add Fields (label → auto API name):\n- **Cadence Step** → `cadenceStep` — type **Number**\n- **Cadence Status** → `cadenceStatus` — type **Select**, options (exact values, UPPERCASE): `ACTIVE`, `REPLIED`, `BOUNCED`, `DONE`\n- **Last Email Sent** → `lastEmailSent` — type **Date**\n- **Timezone** → `timezone` — type **Text** (store the numeric code used in the timezone filter, or leave blank = sends any hour)\n- **Fund Size** → `fundSize` — type **Text** (reach / follower count)\n\nBuilt-in fields used: `name.firstName`, `name.lastName`, `emails.primaryEmail`, `jobTitle`, `company.name`.\n\n### 2. New influencers start at\n`cadenceStep = 0`, `cadenceStatus = ACTIVE`.\n\n### 3. n8n credential\nCredentials → New → **Header Auth**, name it `Twenty API (local)`:\n- Name: `Authorization`\n- Value: `Bearer <YOUR_TWENTY_API_KEY>`  (Twenty → Settings → Developers → API keys)\nThen open each HTTP Request node and pick this credential.\n\n### 4. Base URL\nNodes call `http://twenty-server:3000/rest` (n8n→Twenty over the docker network).\nIf you run n8n OUTSIDE docker, change to `http://localhost:3100/rest`.\n\n### 5. Reconnect Gmail OAuth2 + OpenRouter creds, and set MY_EMAIL\nin the two filter code nodes to your sending address.",
+        "height": 640,
+        "width": 560,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -820,
+        -340
+      ],
+      "id": "setup-twenty-note",
+      "name": "Setup (Twenty)"
+    },
+    {
+      "parameters": {
+        "content": "## 1️⃣ Outreach cadence — hourly (auto)\nCold lead → email 1 → 72h+ → email 2 → 'Email 2 sent'.\nAI-personalized. Stage/date stamped BEFORE send (no double-send).",
+        "height": 140,
+        "width": 420,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -180,
+        -90
+      ],
+      "id": "sticky-cadence",
+      "name": "Sticky Cadence"
+    },
+    {
+      "parameters": {
+        "content": "## 2️⃣ Reply detection + AI draft\nInbox watcher (runs when workflow Active).\nPositive reply → 'Lead · awaiting my approval' + AI draft saved.\nNegative / opt-out → Done.",
+        "height": 140,
+        "width": 420,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -180,
+        330
+      ],
+      "id": "sticky-replies",
+      "name": "Sticky Replies"
+    },
+    {
+      "parameters": {
+        "content": "## 3️⃣ Bounce detection\nBounce notification → match contact → Done.",
+        "height": 140,
+        "width": 420,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -180,
+        690
+      ],
+      "id": "sticky-bounce",
+      "name": "Sticky Bounce"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "a-trigger",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Skip weekends + Friday — return empty so no work happens Fri/Sat/Sun\nconst day = new Date().getUTCDay();\nif (day === 0 || day === 5 || day === 6) return [];\nreturn $input.all();"
+      },
+      "id": "a-skip-weekend",
+      "name": "Skip Weekends + Friday",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://twenty-server:3000/rest/people",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "stage[in]:[COLD_LEAD,EMAIL_1_SENT]"
+            },
+            {
+              "name": "depth",
+              "value": "1"
+            },
+            {
+              "name": "limit",
+              "value": "60"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "starting_after",
+                    "value": "={{ $response.body?.pageInfo?.endCursor || '' }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body?.pageInfo || $response.body.pageInfo.hasNextPage !== true }}",
+              "limitPagesFetched": false
+            }
+          }
+        }
+      },
+      "id": "a-get-active",
+      "name": "Get Active People",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten paginated Twenty responses -> one item per Person, mapped to flat fields\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = (body.data && body.data.people) ? body.data.people\n               : (Array.isArray(body) ? body : []);\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    out.push({ json: {\n      person_id: p.id,\n      first_name: (p.name && p.name.firstName) || '',\n      last_name: (p.name && p.name.lastName) || '',\n      email: (p.emails && p.emails.primaryEmail) || '',\n      org_name: (p.company && p.company.name) || '',\n      job_title: p.jobTitle || '',\n      fund_size: p.fundSize || '',\n      timezone: p.timezone || '',\n      stage: p.stage || 'COLD_LEAD',\n      last_email_sent: p.lastEmailSent || ''\n    }});\n  }\n}\nreturn out;"
+      },
+      "id": "a-map-people",
+      "name": "Map & Normalize People",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Stage filter already limits to COLD_LEAD / EMAIL_1_SENT.\n// Send only if never emailed OR >= 72h since the last email.\nconst THREE_DAYS = 259200000;\nconst now = Date.now();\nconst out = [];\nfor (const item of $input.all()) {\n  const d = item.json;\n  const last = d.last_email_sent ? new Date(d.last_email_sent).getTime() : 0;\n  if (!last || (now - last) >= THREE_DAYS) out.push(item);\n}\nreturn out;"
+      },
+      "id": "a-due-filter",
+      "name": "72h+ Since Last Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Only send during each contact's local window. Unknown/blank timezone => always passes.\n// Set BYPASS = true to ignore timezones entirely (useful for testing).\nconst BYPASS = false;\nif (BYPASS) return $input.all();\nconst timezoneWindows = { '28':9,'29':8,'30':14,'31':17,'32':5,'38':15,'39':3,'40':1,'41':0,'42':23,'43':7,'44':12,'45':13 };\nconst currentHourUTC = new Date().getUTCHours();\nconst results = [];\nfor (const item of $input.all()) {\n  const tz = String(item.json.timezone || '');\n  const sendHour = timezoneWindows[tz];\n  if (sendHour === undefined || sendHour === currentHourUTC) results.push(item);\n}\nreturn results;"
+      },
+      "id": "a-tz-filter",
+      "name": "Filter by Timezone Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Contact Details:\n- Name: {{ $json.first_name }} {{ $json.last_name }}\n- Company: {{ $json.org_name }}\n- Job Title: {{ $json.job_title }}\n- Reach / Follower size: {{ $json.fund_size }}\n- Email: {{ $json.stage === 'COLD_LEAD' ? '1 of 2 (first outreach)' : '2 of 2 (follow-up nudge)' }}\n\nGenerate a personalized influencer-outreach email. The email should:\n1. Start with \"Dear {{ $json.first_name }}\" (keep this exact greeting)\n2. Be tailored to their influence level (fund size = follower count / reach)\n3. Be professional, concise, and compelling\n4. If this is the follow-up (email 2), gently reference the earlier message\n5. Return ONLY the subject and body in the specified JSON format",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are an expert email copywriter for influencer outreach. Generate personalized, compelling emails that convert."
+        }
+      },
+      "id": "a-ai-generate",
+      "name": "Generate Email with AI",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{ \"subject\": \"Email subject line\", \"body\": \"Email body content in HTML format\" }"
+      },
+      "id": "a-email-parser",
+      "name": "Email Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1320,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pick which email to send based on stage; pair AI output with the contact\nconst items = $input.all();\nconst src = $(\"Filter by Timezone Window\").all();\nconst results = [];\nfor (let i = 0; i < items.length; i++) {\n  const ai = items[i].json.output || {};\n  const c = (src[i] && src[i].json) || {};\n  const stage = c.stage || 'COLD_LEAD';\n  const emailNum = stage === 'COLD_LEAD' ? 1 : (stage === 'EMAIL_1_SENT' ? 2 : 0);\n  if (!emailNum || !c.email) continue;        // not in a sendable stage / no email\n  results.push({ json: {\n    person_id: c.person_id,\n    to_email: c.email,\n    email_subject: ai.subject || 'Quick hello',\n    email_body: ai.body || '',\n    email_num: emailNum,\n    next_stage: emailNum === 1 ? 'EMAIL_1_SENT' : 'EMAIL_2_SENT'\n  }});\n}\nreturn results;"
+      },
+      "id": "a-prepare",
+      "name": "Prepare Email for Sending",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "YOUR_SENDING_EMAIL@example.com",
+        "toEmail": "={{ $('Prepare Email for Sending').item.json.to_email }}",
+        "subject": "={{ $('Prepare Email for Sending').item.json.email_subject }}",
+        "emailFormat": "html",
+        "html": "={{ $('Prepare Email for Sending').item.json.email_body }}",
+        "options": {}
+      },
+      "id": "a-send-gmail",
+      "name": "Send via Gmail",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1760,
+        0
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "twenty-local-cred-smtp",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $('Prepare Email for Sending').item.json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ lastEmailSent: $now.toFormat('yyyy-MM-dd'), cadenceStep: $('Prepare Email for Sending').item.json.email_num, stage: $('Prepare Email for Sending').item.json.next_stage }) }}",
+        "options": {}
+      },
+      "id": "a-advance",
+      "name": "Advance Cadence (update Person)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 10
+      },
+      "id": "a-wait",
+      "name": "Wait 10s (Rate Limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        0
+      ],
+      "webhookId": "wait-twenty"
+    },
+    {
+      "parameters": {
+        "format": "resolved",
+        "mailbox": "INBOX",
+        "options": {}
+      },
+      "id": "b-gmail-trigger",
+      "name": "Monitor Gmail Inbox",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        0,
+        520
+      ],
+      "credentials": {
+        "imap": {
+          "id": "twenty-local-cred-imap",
+          "name": "IMAP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Real replies only — IMAP/mailparser shape. Keep clean body + full thread.\nconst MY_EMAIL = 'YOUR_SENDING_EMAIL@example.com';\nfunction mailStr(v){ if(!v) return ''; if(typeof v==='string') return v; if(typeof v.text==='string') return v.text; if(Array.isArray(v.value)&&v.value[0]) return v.value[0].address||v.value[0].name||''; return ''; }\nfunction stripHtml(s){ return String(s).replace(/<style[\\s\\S]*?<\\/style>/gi,'').replace(/<\\/(p|div|br|li|tr)>/gi,'\\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&'); }\nfunction stripQuoted(text){ if(!text) return ''; const lines=String(text).split(/\\r?\\n/); const out=[]; for(const line of lines){ if(/^\\s*On\\b.*\\bwrote:\\s*$/.test(line)) break; if(/^\\s*-{2,}\\s*Original Message\\s*-{2,}/i.test(line)) break; if(/^\\s*_{5,}\\s*$/.test(line)) break; if(/^\\s*>/.test(line)) continue; out.push(line);} return out.join('\\n').replace(/\\n{3,}/g,'\\n\\n').trim(); }\nconst AUTO=[/out of (the )?office/i,/automatic reply/i,/auto[- ]?reply/i,/auto[- ]?responder/i,/vacation/i,/away from (my|the) (office|desk)/i,/currently (out|away|traveling|on leave)/i,/i am (out|away|on vacation|on leave)/i,/^undeliverable/i,/mail delivery (failed|subsystem)/i,/failure notice/i,/returned mail/i,/delivery status notification/i];\nconst results=[];\nfor(const item of $input.all()){\n  const d=item.json;\n  const from=mailStr(d.from).toLowerCase();\n  const subject=(d.subject||'').trim();\n  let raw = (typeof d.text==='string'&&d.text) ? d.text : (d.html?stripHtml(d.html):'');\n  if(!raw && typeof d.textAsHtml==='string') raw=stripHtml(d.textAsHtml);\n  const body=stripQuoted(raw);\n  if(!from || from.includes(MY_EMAIL.toLowerCase())) continue;\n  if(AUTO.some(re=>re.test(subject))) continue;\n  const inReplyTo=d.inReplyTo||'';\n  const references=Array.isArray(d.references)?d.references.join(' '):(d.references||'');\n  const isReply=inReplyTo||references||/^re:/i.test(subject);\n  if(!isReply) continue;\n  results.push({json:{...d, from, subject, body, body_full: raw}});\n}\nreturn results;"
+      },
+      "id": "b-filter-replies",
+      "name": "Filter Replies Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull the sender's email address out of the From header\nconst out = [];\nfor (const item of $input.all()) {\n  const from = String(item.json.from || '');\n  const m = from.match(/[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}/);\n  if (!m) continue;\n  out.push({ json: { ...item.json, sender_email: m[0].toLowerCase() } });\n}\nreturn out;"
+      },
+      "id": "b-extract-email",
+      "name": "Extract Sender Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://twenty-server:3000/rest/people",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "=emails.primaryEmail[eq]:{{ $json.sender_email }}"
+            },
+            {
+              "name": "depth",
+              "value": "1"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b-find-person",
+      "name": "Find Person by Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Match search result to its reply; carry full-thread context\nconst out = [];\nconst all = $input.all();\nfor (let i = 0; i < all.length; i++) {\n  const body = all[i].json || {};\n  const people = body.data && body.data.people ? body.data.people : [];\n  if (!people.length) continue;\n  const p = people[0];\n  const ctx = ($('Extract Sender Email').all()[i] || {}).json || {};\n  out.push({ json: {\n    person_id: p.id,\n    first_name: (p.name && p.name.firstName) || '',\n    last_name: (p.name && p.name.lastName) || '',\n    org_name: (p.company && p.company.name) || '',\n    job_title: p.jobTitle || '',\n    current_stage: p.stage || 'LEAD',\n    reply_from: ctx.from || ctx.sender_email || '',\n    reply_subject: ctx.subject || '',\n    reply_body: ctx.body || ctx.snippet || '',\n    reply_thread: ctx.body_full || ctx.body || ''\n  }});\n}\nreturn out;"
+      },
+      "id": "b-match-person",
+      "name": "Get Matched Person",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=A lead/influencer has replied during outreach or an ongoing negotiation. Use the FULL conversation context, not just the latest line.\n\nInfluencer: {{ $json.first_name }} {{ $json.last_name }} ({{ $json.job_title }} at {{ $json.org_name }})\n\nTHEIR LATEST REPLY:\nSubject: {{ $json.reply_subject }}\n{{ $json.reply_body }}\n\nFULL CONVERSATION CONTEXT (may include quoted earlier messages):\n{{ $json.reply_thread }}\n\nDo two things:\n1. Decide if they are INTERESTED / open to collaborating. Treat declines, \"not interested\", \"no thanks\", \"we'll pass\", unsubscribe/opt-out, or \"remove me / stop\" as interested = false.\n2. Draft a professional, context-aware reply that moves toward the best terms for us, accounting for everything already discussed (prices, deliverables, objections).\n\nReturn ONLY JSON:\n- interested: true or false\n- subject: the reply subject\n- body: the reply body in HTML",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are an expert email response writer. Analyze incoming replies and generate thoughtful, professional responses that move conversations forward."
+        }
+      },
+      "id": "b-ai-analyze",
+      "name": "Analyze Reply with AI",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1100,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{ \"interested\": true, \"subject\": \"Reply email subject\", \"body\": \"Reply email body in HTML format\" }"
+      },
+      "id": "b-reply-parser",
+      "name": "Reply Analysis Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1100,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "shared-openrouter",
+      "name": "OpenRouter Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        220
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "yo5zvomMzPldAvfl",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $('Get Matched Person').item.json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ stage: ($json.output && $json.output.interested === false) ? 'DONE' : ($('Get Matched Person').item.json.current_stage === 'DEAL' ? 'DEAL' : 'LEAD'), aiDraftSubject: ($json.output ? $json.output.subject : ''), aiDraftBody: ($json.output ? $json.output.body : ''), replyApproved: false }) }}",
+        "options": {}
+      },
+      "id": "b-mark-replied",
+      "name": "Mark Lead / Done",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        320
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: 'Reply from ' + $('Get Matched Person').item.json.first_name + ' ' + $('Get Matched Person').item.json.last_name, bodyV2: { markdown: '## \\ud83d\\udce8 Client reply\\n' + '**From:** ' + $('Get Matched Person').item.json.reply_from + '\\n' + '**Subject:** ' + $('Get Matched Person').item.json.reply_subject + '\\n\\n' + ($('Get Matched Person').item.json.reply_body || '(no message body captured)') + '\\n\\n---\\n\\n' + '## \\ud83e\\udd16 Suggested response (AI draft)\\n' + '**Subject:** ' + ($json.output ? $json.output.subject : '') + '\\n\\n' + ($json.output ? $json.output.body : '') } }) }}",
+        "options": {}
+      },
+      "id": "b-create-note",
+      "name": "Create Note (AI suggestion)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/noteTargets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ noteId: ($json.data && $json.data.createNote ? $json.data.createNote.id : $json.id), targetPersonId: $('Get Matched Person').item.json.person_id }) }}",
+        "options": {}
+      },
+      "id": "b-link-note",
+      "name": "Link Note to Person",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "bounce-1",
+              "leftValue": "={{ $json.subject }}",
+              "rightValue": "Undeliverable",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "bounce-2",
+              "leftValue": "={{ $json.subject }}",
+              "rightValue": "Delivery Status Notification",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "bounce-3",
+              "leftValue": "={{ $json.subject }}",
+              "rightValue": "Mail Delivery Failed",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {
+          "ignoreCase": true
+        }
+      },
+      "id": "c-filter-bounces",
+      "name": "Filter Bounces",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull the bounced recipient address out of the bounce notification body\nconst MY_EMAIL = 'YOUR_SENDING_EMAIL@example.com'; // <-- set to your sending address\nconst body = $input.first().json.text || $input.first().json.body || $input.first().json.snippet || '';\nconst matches = body.match(/[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}/g) || [];\nlet bounced = '';\nfor (const raw of matches) {\n  const email = raw.toLowerCase();\n  if (email !== MY_EMAIL.toLowerCase() && email.indexOf('postmaster') === -1 && email.indexOf('mailer-daemon') === -1 && email.indexOf('noreply') === -1) { bounced = email; break; }\n}\nif (!bounced) return [];\nreturn [{ json: { bounced_email: bounced } }];"
+      },
+      "id": "c-extract-bounced",
+      "name": "Extract Bounced Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://twenty-server:3000/rest/people",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "=emails.primaryEmail[eq]:{{ $json.bounced_email }}"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c-find-bounced",
+      "name": "Find Bounced Person",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        780
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = body.data && body.data.people ? body.data.people : [];\n  if (!people.length) continue;\n  out.push({ json: { person_id: people[0].id } });\n}\nreturn out;"
+      },
+      "id": "c-match-bounced",
+      "name": "Get Bounced Person",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ stage: 'DONE' }) }}",
+        "options": {}
+      },
+      "id": "c-mark-bounced",
+      "name": "Mark Bounced",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        780
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: '\\ud83d\\udce4 Outreach email #' + $('Prepare Email for Sending').item.json.next_cadence_step + ' sent', bodyV2: { markdown: '**To:** ' + $('Prepare Email for Sending').item.json.to_email + '\\n' + '**Subject:** ' + $('Prepare Email for Sending').item.json.email_subject + '\\n\\n' + ($('Prepare Email for Sending').item.json.email_body || '').replace(/<[^>]+>/g, '') } }) }}",
+        "options": {}
+      },
+      "id": "a-create-note-sent",
+      "name": "Create Note (sent email)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/noteTargets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ noteId: ($json.data && $json.data.createNote ? $json.data.createNote.id : $json.id), targetPersonId: $('Prepare Email for Sending').item.json.person_id }) }}",
+        "options": {}
+      },
+      "id": "a-link-note-sent",
+      "name": "Link Sent Note to Person",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "ap-trigger",
+      "name": "Check Approved Replies",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1060
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://twenty-server:3000/rest/people",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "replyApproved[eq]:true"
+            },
+            {
+              "name": "depth",
+              "value": "0"
+            },
+            {
+              "name": "limit",
+              "value": "60"
+            }
+          ]
+        }
+      },
+      "id": "ap-get",
+      "name": "Get Approved Replies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        1060
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per approved contact, ready to send\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = (body.data && body.data.people) ? body.data.people : [];\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    const email = (p.emails && p.emails.primaryEmail) || '';\n    if (!email) continue;\n    out.push({ json: {\n      person_id: p.id,\n      to_email: email,\n      subject: p.aiDraftSubject || 'Re: our conversation',\n      body: p.aiDraftBody || ''\n    }});\n  }\n}\nreturn out;"
+      },
+      "id": "ap-map",
+      "name": "Map Approved Replies",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        1060
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "YOUR_SENDING_EMAIL@example.com",
+        "toEmail": "={{ $('Map Approved Replies').item.json.to_email }}",
+        "subject": "={{ $('Map Approved Replies').item.json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $('Map Approved Replies').item.json.body }}",
+        "options": {}
+      },
+      "id": "ap-send",
+      "name": "Send Approved Reply via Gmail",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        680,
+        1060
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "twenty-local-cred-smtp",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $('Map Approved Replies').item.json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ replyApproved: false, stage: 'NEGOTIATION', lastEmailSent: $now.toFormat('yyyy-MM-dd') }) }}"
+      },
+      "id": "ap-patch",
+      "name": "Mark Negotiation + clear approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        1060
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "d-trigger",
+      "name": "Check Deals to Analyze",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://twenty-server:3000/rest/people",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "stage[eq]:DEAL"
+            },
+            {
+              "name": "depth",
+              "value": "0"
+            },
+            {
+              "name": "limit",
+              "value": "60"
+            }
+          ]
+        }
+      },
+      "id": "d-get",
+      "name": "Get Deal-Stage Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        1420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Take ONE unanalyzed Deal-stage contact per run (deals are infrequent)\nconst out = [];\nfor (const item of $input.all()) {\n  const people = ((item.json || {}).data || {}).people || [];\n  for (const p of people) {\n    if (!p || !p.id || p.dealAnalyzed === true) continue;\n    const email = (p.emails && p.emails.primaryEmail) || '';\n    if (!email) continue;\n    out.push({ json: { person_id: p.id, email,\n      first_name: (p.name && p.name.firstName) || '',\n      last_name: (p.name && p.name.lastName) || '' } });\n    break;\n  }\n  if (out.length) break;\n}\nreturn out.slice(0, 1);"
+      },
+      "id": "d-pick",
+      "name": "Pick One Deal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://twenty-server:3000/rest/noteTargets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "=targetPersonId[eq]:{{ $('Pick One Deal').item.json.person_id }}"
+            },
+            {
+              "name": "depth",
+              "value": "1"
+            },
+            {
+              "name": "limit",
+              "value": "60"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d-gmail",
+      "name": "Get Client Emails",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        1420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the conversation text for the AI from this contact's Twenty notes\nconst deal = $('Pick One Deal').first().json;\nconst body = $input.first().json || {};\nconst targets = (body.data && body.data.noteTargets) ? body.data.noteTargets : [];\nconst notes = targets.map(t => t.note).filter(Boolean);\nnotes.sort((a,b)=> new Date(a.createdAt||0) - new Date(b.createdAt||0));\nconst text = notes.map(n => (n.title||'') + '\\n' + ((n.bodyV2 && n.bodyV2.markdown) || '')).join('\\n\\n-----\\n\\n');\nreturn [{ json: {\n  person_id: deal.person_id, first_name: deal.first_name, last_name: deal.last_name,\n  email: deal.email, thread_text: text || '(no conversation notes found for this contact)'\n} }];"
+      },
+      "id": "d-thread",
+      "name": "Assemble Thread",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are analyzing the full email history between us (a brand) and an influencer we want to run a paid collaboration with.\n\nInfluencer: {{ $json.first_name }} {{ $json.last_name }} <{{ $json.email }}>\n\nEMAIL HISTORY:\n{{ $json.thread_text }}\n\nExtract the commercial details of the deal. Return ONLY JSON with:\n- priceRequested: number the influencer is asking for (no currency symbol), 0 if unknown\n- ourOffer: number we offered / plan to pay, 0 if unknown\n- agreedAmount: final agreed number if a deal was struck, else 0\n- dealName: a short title for this deal\n- summary: concise summary of deliverables, platform(s), timeline, key terms, and anything still open",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You extract structured deal terms from sales email threads. Be accurate; use 0 when a number is not stated."
+        }
+      },
+      "id": "d-extract",
+      "name": "Extract Deal Terms",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1100,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{ \"priceRequested\": 0, \"ourOffer\": 0, \"agreedAmount\": 0, \"dealName\": \"Collab deal\", \"summary\": \"...\" }"
+      },
+      "id": "d-parser",
+      "name": "Deal Terms Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1100,
+        1640
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $('Assemble Thread').item.json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ dealPriceRequested: (Number(($('Extract Deal Terms').item.json.output||{}).priceRequested) || null), dealOurOffer: (Number(($('Extract Deal Terms').item.json.output||{}).ourOffer) || null), dealSummary: (($('Extract Deal Terms').item.json.output||{}).summary || ''), dealAnalyzed: true }) }}"
+      },
+      "id": "d-patch",
+      "name": "Save Deal Fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        1420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/opportunities",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: ((($('Extract Deal Terms').item.json.output||{}).dealName) || ('Deal — ' + $('Assemble Thread').item.json.first_name + ' ' + $('Assemble Thread').item.json.last_name)), amount: { amountMicros: Math.round((Number(($('Extract Deal Terms').item.json.output||{}).agreedAmount) || Number(($('Extract Deal Terms').item.json.output||{}).ourOffer) || 0) * 1000000), currencyCode: 'USD' }, pointOfContactId: $('Assemble Thread').item.json.person_id }) }}"
+      },
+      "id": "d-opp",
+      "name": "Create Opportunity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        1420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: '🤝 Deal summary — ' + $('Assemble Thread').item.json.first_name + ' ' + $('Assemble Thread').item.json.last_name, bodyV2: { markdown: '**Price requested:** ' + (($('Extract Deal Terms').item.json.output||{}).priceRequested || '?') + '\\n' + '**Our offer:** ' + (($('Extract Deal Terms').item.json.output||{}).ourOffer || '?') + '\\n' + '**Agreed:** ' + (($('Extract Deal Terms').item.json.output||{}).agreedAmount || '?') + '\\n\\n' + (($('Extract Deal Terms').item.json.output||{}).summary || '') } }) }}"
+      },
+      "id": "d-note",
+      "name": "Create Deal Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        1420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://twenty-server:3000/rest/noteTargets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ noteId: ($json.data && $json.data.createNote ? $json.data.createNote.id : $json.id), targetPersonId: $('Assemble Thread').item.json.person_id }) }}"
+      },
+      "id": "d-link",
+      "name": "Link Deal Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        1420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $('Map Approved Replies').item.json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ replyApproved: false }) }}"
+      },
+      "id": "ap-clear",
+      "name": "Clear Approval (pre-send)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        1240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "s-trigger",
+      "name": "Daily Stale Cleanup",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        1780
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://twenty-server:3000/rest/people",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "stage[eq]:EMAIL_2_SENT"
+            },
+            {
+              "name": "depth",
+              "value": "0"
+            },
+            {
+              "name": "limit",
+              "value": "60"
+            }
+          ]
+        }
+      },
+      "id": "s-get",
+      "name": "Get Email-2 Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        1780
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Email-2-sent contacts with no reply for >= 7 days -> Done\nconst SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;\nconst now = Date.now();\nconst out = [];\nfor (const item of $input.all()) {\n  const people = ((item.json || {}).data || {}).people || [];\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    const last = p.lastEmailSent ? new Date(p.lastEmailSent).getTime() : 0;\n    if (last && (now - last) >= SEVEN_DAYS) out.push({ json: { person_id: p.id } });\n  }\n}\nreturn out;"
+      },
+      "id": "s-pick",
+      "name": "Pick Stale (7d no reply)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        1780
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://twenty-server:3000/rest/people/{{ $json.person_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ stage: 'DONE' }) }}"
+      },
+      "id": "s-patch",
+      "name": "Mark Done (no reply)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        1780
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "twenty-local-cred",
+          "name": "Twenty API (local)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 4️⃣ Approved-reply sender — every 5 min\nReply Approved = true → send your (edited) draft → clear approval → 'Lead · awaiting client reply'.",
+        "color": 6,
+        "width": 420,
+        "height": 140
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        890
+      ],
+      "id": "sticky-flow-4",
+      "name": "Sticky Flow 4"
+    },
+    {
+      "parameters": {
+        "content": "## 5️⃣ Deal analysis — every 5 min\nStage = Deal → read Gmail thread → AI extracts price / our offer / terms → fills deal fields + creates Opportunity + 🤝 note.",
+        "color": 7,
+        "width": 420,
+        "height": 140
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        1250
+      ],
+      "id": "sticky-flow-5",
+      "name": "Sticky Flow 5"
+    },
+    {
+      "parameters": {
+        "content": "## 6️⃣ Stale cleanup — daily 08:00\n'Email 2 sent' + 7 days, no reply → Done.",
+        "color": 2,
+        "width": 420,
+        "height": 140
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        1610
+      ],
+      "id": "sticky-flow-6",
+      "name": "Sticky Flow 6"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Skip Weekends + Friday",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Weekends + Friday": {
+      "main": [
+        [
+          {
+            "node": "Get Active People",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active People": {
+      "main": [
+        [
+          {
+            "node": "Map & Normalize People",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map & Normalize People": {
+      "main": [
+        [
+          {
+            "node": "72h+ Since Last Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "72h+ Since Last Email": {
+      "main": [
+        [
+          {
+            "node": "Filter by Timezone Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter by Timezone Window": {
+      "main": [
+        [
+          {
+            "node": "Generate Email with AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email with AI": {
+      "main": [
+        [
+          {
+            "node": "Prepare Email for Sending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Generate Email with AI",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email for Sending": {
+      "main": [
+        [
+          {
+            "node": "Advance Cadence (update Person)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send via Gmail": {
+      "main": [
+        [
+          {
+            "node": "Create Note (sent email)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Advance Cadence (update Person)": {
+      "main": [
+        [
+          {
+            "node": "Send via Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitor Gmail Inbox": {
+      "main": [
+        [
+          {
+            "node": "Filter Replies Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Bounces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Replies Only": {
+      "main": [
+        [
+          {
+            "node": "Extract Sender Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Sender Email": {
+      "main": [
+        [
+          {
+            "node": "Find Person by Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Person by Email": {
+      "main": [
+        [
+          {
+            "node": "Get Matched Person",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Matched Person": {
+      "main": [
+        [
+          {
+            "node": "Analyze Reply with AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Reply with AI": {
+      "main": [
+        [
+          {
+            "node": "Mark Lead / Done",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Note (AI suggestion)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Analysis Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Analyze Reply with AI",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Email with AI",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Analyze Reply with AI",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Extract Deal Terms",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Note (AI suggestion)": {
+      "main": [
+        [
+          {
+            "node": "Link Note to Person",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Bounces": {
+      "main": [
+        [
+          {
+            "node": "Extract Bounced Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Bounced Email": {
+      "main": [
+        [
+          {
+            "node": "Find Bounced Person",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Bounced Person": {
+      "main": [
+        [
+          {
+            "node": "Get Bounced Person",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Bounced Person": {
+      "main": [
+        [
+          {
+            "node": "Mark Bounced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Note (sent email)": {
+      "main": [
+        [
+          {
+            "node": "Link Sent Note to Person",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approved Replies": {
+      "main": [
+        [
+          {
+            "node": "Get Approved Replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Approved Replies": {
+      "main": [
+        [
+          {
+            "node": "Map Approved Replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Approved Replies": {
+      "main": [
+        [
+          {
+            "node": "Clear Approval (pre-send)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Approved Reply via Gmail": {
+      "main": [
+        [
+          {
+            "node": "Mark Negotiation + clear approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Deals to Analyze": {
+      "main": [
+        [
+          {
+            "node": "Get Deal-Stage Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Deal-Stage Contacts": {
+      "main": [
+        [
+          {
+            "node": "Pick One Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick One Deal": {
+      "main": [
+        [
+          {
+            "node": "Get Client Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Client Emails": {
+      "main": [
+        [
+          {
+            "node": "Assemble Thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Thread": {
+      "main": [
+        [
+          {
+            "node": "Extract Deal Terms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Deal Terms": {
+      "main": [
+        [
+          {
+            "node": "Save Deal Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Deal Fields": {
+      "main": [
+        [
+          {
+            "node": "Create Opportunity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Opportunity": {
+      "main": [
+        [
+          {
+            "node": "Create Deal Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Deal Note": {
+      "main": [
+        [
+          {
+            "node": "Link Deal Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deal Terms Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Extract Deal Terms",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Approval (pre-send)": {
+      "main": [
+        [
+          {
+            "node": "Send Approved Reply via Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Stale Cleanup": {
+      "main": [
+        [
+          {
+            "node": "Get Email-2 Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Email-2 Contacts": {
+      "main": [
+        [
+          {
+            "node": "Pick Stale (7d no reply)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Stale (7d no reply)": {
+      "main": [
+        [
+          {
+            "node": "Mark Done (no reply)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
