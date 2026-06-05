@@ -136,7 +136,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Flatten paginated Twenty responses -> one item per Person, mapped to flat fields\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = (body.data && body.data.people) ? body.data.people\n               : (Array.isArray(body) ? body : []);\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    out.push({ json: {\n      person_id: p.id,\n      first_name: (p.name && p.name.firstName) || '',\n      last_name: (p.name && p.name.lastName) || '',\n      email: (p.emails && p.emails.primaryEmail) || '',\n      org_name: (p.company && p.company.name) || '',\n      job_title: p.jobTitle || '',\n      fund_size: p.fundSize || '',\n      timezone: p.timezone || '',\n      stage: p.stage || 'COLD_LEAD',\n      last_email_sent: p.lastEmailSent || ''\n    }});\n  }\n}\nreturn out;"
+        "jsCode": "// Flatten paginated Twenty responses -> one item per Person, mapped to flat fields\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = (body.data && body.data.people) ? body.data.people\n               : (Array.isArray(body) ? body : []);\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    out.push({ json: {\n      person_id: p.id,\n      unsubscribed: p.unsubscribed === true,\n      first_name: (p.name && p.name.firstName) || '',\n      last_name: (p.name && p.name.lastName) || '',\n      email: (p.emails && p.emails.primaryEmail) || '',\n      org_name: (p.company && p.company.name) || '',\n      job_title: p.jobTitle || '',\n      fund_size: p.fundSize || '',\n      timezone: p.timezone || '',\n      stage: p.stage || 'COLD_LEAD',\n      last_email_sent: p.lastEmailSent || ''\n    }});\n  }\n}\nreturn out;"
       },
       "id": "a33e5b9c-afce-42f7-860e-6903ed37d907",
       "name": "Map & Normalize People",
@@ -149,7 +149,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Stage filter already limits to COLD_LEAD / EMAIL_1_SENT.\n// Send only if never emailed OR >= 72h since the last email.\nconst THREE_DAYS = 259200000;\nconst now = Date.now();\nconst out = [];\nfor (const item of $input.all()) {\n  const d = item.json;\n  const last = d.last_email_sent ? new Date(d.last_email_sent).getTime() : 0;\n  if (!last || (now - last) >= THREE_DAYS) out.push(item);\n}\nreturn out;"
+        "jsCode": "// Stage filter already limits to COLD_LEAD / EMAIL_1_SENT.\n// Send only if never emailed OR >= 72h since the last email.\nconst THREE_DAYS = 259200000;\nconst now = Date.now();\nconst out = [];\nfor (const item of $input.all()) {\n  const d = item.json;\n  if (d.unsubscribed) continue;   // never email opted-out contacts\n  const last = d.last_email_sent ? new Date(d.last_email_sent).getTime() : 0;\n  if (!last || (now - last) >= THREE_DAYS) out.push(item);\n}\nreturn out;"
       },
       "id": "e96748b7-1fb8-4c65-b511-955b49f35ca7",
       "name": "72h+ Since Last Email",
@@ -206,7 +206,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Pick which email to send based on stage; pair AI output with the contact\nconst items = $input.all();\nconst src = $(\"Filter by Timezone Window\").all();\nconst results = [];\nfor (let i = 0; i < items.length; i++) {\n  const ai = items[i].json.output || {};\n  const c = (src[i] && src[i].json) || {};\n  const stage = c.stage || 'COLD_LEAD';\n  const emailNum = stage === 'COLD_LEAD' ? 1 : (stage === 'EMAIL_1_SENT' ? 2 : 0);\n  if (!emailNum || !c.email) continue;        // not in a sendable stage / no email\n  results.push({ json: {\n    person_id: c.person_id,\n    to_email: c.email,\n    email_subject: ai.subject || 'Quick hello',\n    email_body: ai.body || '',\n    email_num: emailNum,\n    next_stage: emailNum === 1 ? 'EMAIL_1_SENT' : 'EMAIL_2_SENT'\n  }});\n}\nreturn results;"
+        "jsCode": "// Pick which email to send based on stage; pair AI output with the contact\nconst items = $input.all();\nconst src = $(\"Filter by Timezone Window\").all();\nconst results = [];\nconst FOOTER = '<br><br><p style=\"font-size:12px;color:#999;margin-top:24px\">You are receiving this as part of a partnership outreach. To stop receiving messages, reply with \"unsubscribe\" and we will remove you right away.</p>';\nfor (let i = 0; i < items.length; i++) {\n  const ai = items[i].json.output || {};\n  const c = (src[i] && src[i].json) || {};\n  const stage = c.stage || 'COLD_LEAD';\n  const emailNum = stage === 'COLD_LEAD' ? 1 : (stage === 'EMAIL_1_SENT' ? 2 : 0);\n  if (!emailNum || !c.email) continue;        // not in a sendable stage / no email\n  results.push({ json: {\n    person_id: c.person_id,\n    to_email: c.email,\n    email_subject: ai.subject || 'Quick hello',\n    email_body: (ai.body || '') + FOOTER,\n    email_num: emailNum,\n    next_stage: emailNum === 1 ? 'EMAIL_1_SENT' : 'EMAIL_2_SENT'\n  }});\n}\nreturn results;"
       },
       "id": "84049e3a-b4cc-436b-ab8a-5e70dd19214a",
       "name": "Prepare Email for Sending",
@@ -423,7 +423,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ stage: ($json.output && $json.output.interested === false) ? 'DONE' : ($('Get Matched Person').item.json.current_stage === 'DEAL' ? 'DEAL' : 'LEAD'), aiDraftSubject: ($json.output ? $json.output.subject : ''), aiDraftBody: ($json.output ? $json.output.body : ''), replyApproved: false }) }}",
+        "jsonBody": "={{ JSON.stringify({ stage: ($json.output && $json.output.interested === false) ? 'DONE' : ($('Get Matched Person').item.json.current_stage === 'DEAL' ? 'DEAL' : 'LEAD'), aiDraftSubject: ($json.output ? $json.output.subject : ''), aiDraftBody: ($json.output ? $json.output.body : ''), replyApproved: false, unsubscribed: /unsubscribe|opt[- ]?out|remove me|take me off|do not (contact|email)|stop (emailing|contacting)/i.test($('Get Matched Person').item.json.reply_body || '') }) }}",
         "options": {}
       },
       "id": "dddf016e-e256-4acd-b1b5-609f27c92d1c",
@@ -733,7 +733,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// One item per approved contact, ready to send\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = (body.data && body.data.people) ? body.data.people : [];\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    const email = (p.emails && p.emails.primaryEmail) || '';\n    if (!email) continue;\n    out.push({ json: {\n      person_id: p.id,\n      to_email: email,\n      subject: p.aiDraftSubject || 'Re: our conversation',\n      body: p.aiDraftBody || ''\n    }});\n  }\n}\nreturn out;"
+        "jsCode": "// One item per approved contact, ready to send\nconst out = [];\nconst FOOTER = '<br><br><p style=\"font-size:12px;color:#999;margin-top:24px\">You are receiving this as part of a partnership outreach. To stop receiving messages, reply with \"unsubscribe\" and we will remove you right away.</p>';\nfor (const item of $input.all()) {\n  const body = item.json || {};\n  const people = (body.data && body.data.people) ? body.data.people : [];\n  for (const p of people) {\n    if (!p || !p.id) continue;\n    const email = (p.emails && p.emails.primaryEmail) || '';\n    if (!email) continue;\n    out.push({ json: {\n      person_id: p.id,\n      to_email: email,\n      subject: p.aiDraftSubject || 'Re: our conversation',\n      body: (p.aiDraftBody || '') + FOOTER\n    }});\n  }\n}\nreturn out;"
       },
       "id": "ap-map",
       "name": "Map Approved Replies",
