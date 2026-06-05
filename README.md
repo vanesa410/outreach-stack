@@ -40,7 +40,7 @@ python3 setup_twenty_fields.py
 ```
 
 ### 3. Import the n8n workflow
-- n8n → Workflows → **Import from File** → `finance_n8n_workflow_twenty.json`
+- n8n → Workflows → **Import from File** → `outreach_workflow.json`
 - Create your credentials in n8n and select them on the nodes:
   - **Header Auth** (`Authorization: Bearer <your Twenty API key>`) → the HTTP Request nodes
   - **SMTP** (Gmail/Workspace or your server) → the Send Email nodes
@@ -72,7 +72,7 @@ All scripts read `TWENTY_API_KEY` (and optional `TWENTY_BASE_URL`) from the envi
 ## Layout
 ```
 deploy/                 docker-compose + .env.example + Caddyfile + GO-LIVE.md
-finance_n8n_workflow_twenty.json   the n8n workflow
+outreach_workflow.json   the n8n workflow
 setup_twenty_fields.py  provision Twenty custom fields
 import_to_twenty.py / enrich_twenty.py / cadence_admin.py   helper scripts
 ```

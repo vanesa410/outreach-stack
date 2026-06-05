@@ -1,4 +1,4 @@
-# Finance stack — Twenty CRM + n8n (self-hosted, one server)
+# Outreach stack — Twenty CRM + n8n (self-hosted, one server)
 
 Twenty CRM and n8n on one host via a single `docker compose`, sharing one
 Postgres and one Redis, behind Caddy (automatic HTTPS).
@@ -24,9 +24,9 @@ Postgres and one Redis, behind Caddy (automatic HTTPS).
 
 ### 1. Copy this folder to the server
 ```bash
-scp -r deploy/ user@your-server:/opt/finance-stack
+scp -r deploy/ user@your-server:/opt/outreach-stack
 ssh user@your-server
-cd /opt/finance-stack
+cd /opt/outreach-stack
 ```
 
 ### 2. Set your domains
@@ -82,7 +82,7 @@ docker compose logs -f twenty-server   # wait for "healthy"
    URL, then in Twenty → Settings → Developers → **Webhooks** point an event
    (e.g. record created) at it. Internal URL: `http://n8n:5678/webhook/...`.
 
-The existing `finance_n8n_workflow.json` in the project root can be imported via
+The existing `outreach_workflow.json` in the project root can be imported via
 n8n → **Workflows → Import from File**.
 
 ---

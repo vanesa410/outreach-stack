@@ -21,8 +21,8 @@ influencer reply  ──MX────────►  Stalwart (INBOX)  ◄─�
 
 ## 1. Deploy the stack
 ```bash
-scp -r deploy/ user@server:/opt/finance-stack && ssh user@server
-cd /opt/finance-stack
+scp -r deploy/ user@server:/opt/outreach-stack && ssh user@server
+cd /opt/outreach-stack
 # edit .env: real domains + regenerate all secrets (openssl rand)
 docker compose up -d            # base file only (NOT docker-compose.local.yml)
 ```
@@ -77,7 +77,7 @@ With a real Let's Encrypt cert there's no self-signed-cert friction. Sent + rece
 ---
 
 ### Why the relay can't be configured locally
-On `finance.local` (no real domain / no public IP / no MX) Gmail rejects direct sends as
+On `mail.local` (no real domain / no public IP / no MX) Gmail rejects direct sends as
 *unauthenticated* (proven in testing), and replies can't route to a localhost server.
 The relay + receiving only become real once steps 2–3 above exist. Until then, local
 testing uses Gmail directly (your Gmail account) for send + receive.

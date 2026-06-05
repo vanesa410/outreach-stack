@@ -9,7 +9,7 @@ import openpyxl
 BASE = os.environ.get("TWENTY_BASE_URL", "http://localhost:3100/rest")
 KEY = os.environ.get("TWENTY_API_KEY", "")
 COMMIT = "--commit" in sys.argv
-FILES = ["influencers.xlsx", "finance.xlsx"]   # finance overrides where names overlap
+FILES = ["contacts.xlsx"]   # your spreadsheet(s) — add more to merge
 FOLLOWER_COLS = ["X Followers", "IG Followers", "YT Subscribers", "Telegram Members", "TikTok Followers"]
 
 
